@@ -4,32 +4,8 @@
 # Empty lines are also ignored
 # ============================================================
 
-hidden face girl dp
-hidden face girl photo
-hidden face girl wallpaper
-attitude girl photo
-attitude girl wallpaper
-attitude girl dp
-sad girl dp
-sad girl photo
-sad girl wallpaper
-aesthetic girl dp
-aesthetic girl wallpaper
-cute girl dp
-cute girl photo
-instagram girl dp
-instagram girl photo
-stylish girl dp
-stylish girl photo
-stylish girl wallpaper
-beautiful girl dp
-alone girl dp
-cool girl dp
-romantic girl dp
-simple girl dp
-black dress girl dp
-college girl dp
-desi girl dp
-royal girl dp
-modern girl dp
-innocent girl dp
+aesthetic black hidden face girl
+anime girl dp for instagram
+cute anime girl dp for instagram
+russian girl image
+blur aesthetic black hidden face girl
