@@ -50,8 +50,8 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "your_token")
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "your_chat_id")
 
 # --- Post settings ---
-POSTS_PER_RUN      = 10           # 10 posts per day
-IMAGES_PER_HEADING = 10           # 10 images per heading = 50 images per post
+POSTS_PER_RUN      = 2          # 10 posts per day
+IMAGES_PER_HEADING = 25           # 10 images per heading = 50 images per post
 POST_STATUS        = "publish"    # publish instantly — gap handled by script sleep
 
 # --- Gap between posts ---
