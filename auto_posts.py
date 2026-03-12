@@ -42,7 +42,7 @@ TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "your_chat_id")
 # --- Post settings ---
 POSTS_PER_RUN      = 1
 IMAGES_PER_HEADING = 10
-POST_STATUS        = "drafts"   # "draft" or "publish"
+POST_STATUS        = "draft"   # "draft" or "publish"
 
 # --- Google Indexing ---
 SERVICE_ACCOUNT_FILE = "service_account.json"
@@ -680,7 +680,23 @@ def create_wp_post(title, content, category_id, focus_kw, meta_desc):
     try:
         r      = requests.post(f"{WP_URL}/posts", json=data, auth=AUTH, timeout=30)
         result = r.json()
+
+        if r.status_code not in (200, 201):
+            log(f"  WP API error {r.status_code}")
+            log(f"  WP error code   : {result.get('code', 'unknown')}")
+            log(f"  WP error message: {result.get('message', 'unknown')}")
+            log(f"  WP error data   : {result.get('data', {})}")
+            send_telegram(
+                f"\u274c <b>Post Creation Failed</b>\n\n"
+                f"<b>Status:</b> {r.status_code}\n"
+                f"<b>Code:</b> {result.get('code', 'unknown')}\n"
+                f"<b>Message:</b> {result.get('message', 'unknown')}\n"
+                f"<b>Title:</b> {data['title']}"
+            )
+            return None, ""
+
         return result.get("id"), result.get("link", "")
+
     except Exception as e:
         log(f"  WP post creation error: {e}")
         return None, ""
