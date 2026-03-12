@@ -42,7 +42,7 @@ TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "your_chat_id")
 # --- Post settings ---
 POSTS_PER_RUN      = 1
 IMAGES_PER_HEADING = 10
-POST_STATUS        = "publish"   # "draft" or "publish"
+POST_STATUS        = "drafts"   # "draft" or "publish"
 
 # --- Google Indexing ---
 SERVICE_ACCOUNT_FILE = "service_account.json"
