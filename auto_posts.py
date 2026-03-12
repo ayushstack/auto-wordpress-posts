@@ -55,7 +55,7 @@ IMAGES_PER_HEADING = 25           # 10 images per heading = 50 images per post
 POST_STATUS        = "publish"    # publish instantly — gap handled by script sleep
 
 # --- Gap between posts ---
-POST_GAP_SECONDS   = 7200         # 2 hours = 7200 seconds
+POST_GAP_SECONDS   = 120         # 2 hours = 7200 seconds
 
 # --- Google Indexing ---
 SERVICE_ACCOUNT_FILE = "service_account.json"
