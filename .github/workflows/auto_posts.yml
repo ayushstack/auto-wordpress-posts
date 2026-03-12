@@ -1,7 +1,10 @@
 # ============================================================
-# GitHub Actions — Auto WordPress Post Creator
+# GitHub Actions — Auto WordPress Post Creator v15
 # Runs every day at 10:00 AM IST (India Standard Time)
 # IST = UTC + 5:30  →  10:00 AM IST = 04:30 UTC
+#
+# Script publishes 10 posts with 2 hour real gap between each.
+# Total runtime = ~20 hours → timeout set to 630 minutes (10.5 hours buffer)
 # ============================================================
 
 name: Auto WordPress Posts
@@ -10,13 +13,13 @@ on:
   schedule:
     - cron: "30 4 * * *"   # 04:30 UTC = 10:00 AM IST every day
 
-  # Also allow manual trigger from GitHub UI
+  # Manual trigger from GitHub UI
   workflow_dispatch:
     inputs:
       posts:
         description: "Number of posts to create"
         required: false
-        default: "1"
+        default: "10"
       dry_run:
         description: "Dry run? (true/false)"
         required: false
@@ -25,9 +28,10 @@ on:
 jobs:
   run-auto-posts:
     runs-on: ubuntu-latest
+    timeout-minutes: 630   # 10 posts x 2 hours = 20 hours + 30 min buffer
 
     steps:
-      # ── 1. Checkout your repo ──────────────────────────────
+      # ── 1. Checkout repo ───────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -42,16 +46,12 @@ jobs:
         run: |
           pip install requests google-auth
 
-      # ── 4. Write service_account.json from GitHub Secret ──
-      #    Go to: Repo → Settings → Secrets → New secret
-      #    Name: SERVICE_ACCOUNT_JSON
-      #    Value: paste the full contents of your service_account.json
+      # ── 4. Write service_account.json ─────────────────────
       - name: Write service_account.json
         run: |
           echo '${{ secrets.SERVICE_ACCOUNT_JSON }}' > service_account.json
 
       # ── 5. Restore used_keywords.txt from cache ────────────
-      #    This prevents duplicate posts across runs
       - name: Restore used keywords cache
         uses: actions/cache@v4
         with:
@@ -61,7 +61,6 @@ jobs:
             used-keywords-
 
       # ── 6. Run the script ──────────────────────────────────
-      #    Secrets are set in: Repo → Settings → Secrets and variables → Actions
       - name: Run auto_posts.py
         env:
           WP_USERNAME:         ${{ secrets.WP_USERNAME }}
@@ -69,8 +68,7 @@ jobs:
           TELEGRAM_BOT_TOKEN:  ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # Determine args (manual trigger vs scheduled)
-          POSTS="${{ github.event.inputs.posts || '1' }}"
+          POSTS="${{ github.event.inputs.posts || '10' }}"
           DRY="${{ github.event.inputs.dry_run || 'false' }}"
 
           if [ "$DRY" = "true" ]; then
@@ -79,7 +77,7 @@ jobs:
             python auto_posts.py --posts "$POSTS"
           fi
 
-      # ── 7. Save logs as artifact (downloadable from GitHub) ─
+      # ── 7. Upload logs ─────────────────────────────────────
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -88,8 +86,7 @@ jobs:
           path: logs/
           retention-days: 30
 
-      # ── 8. Commit updated used_keywords.txt back to repo ───
-      #    So next run knows which keywords were already used
+      # ── 8. Commit used_keywords.txt back to repo ───────────
       - name: Commit used_keywords.txt
         if: success()
         run: |

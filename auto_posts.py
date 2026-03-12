@@ -1,20 +1,30 @@
 """
-auto_posts.py — Fully Automatic WordPress Post Creator (v14)
+auto_posts.py — Fully Automatic WordPress Post Creator (v15)
 ============================================================
-Changes from v13:
+What's in this version:
+  ✅ Keywords loaded from keywords.txt
   ✅ Intros loaded from intros.txt
   ✅ Meta descriptions loaded from meta_descriptions.txt
   ✅ Title templates loaded from title_templates.txt
   ✅ Subheading fallbacks loaded from subheading_fallbacks.txt
-  ✅ Focus keyword = clean keyword only (no title template wrapping)
-  ✅ Meta description uses keyword as clean title (no brackets/numbers)
-  ✅ Zero hardcoded content — everything lives in .txt files
+  ✅ Focus keyword = clean keyword only (Yoast SEO)
+  ✅ Intro font size 20px, keyword in bold
+  ✅ No featured image
+  ✅ Full error logging for WP failures
+  ✅ Telegram notifications with full run summary
+  ✅ Low keywords / exhausted keyword alerts
+  ✅ 10 posts per day
+  ✅ Script waits 2 hours between each post (real gap, not WP scheduling)
+  ✅ Posts published instantly as 'publish' status
+  ✅ Duplicate title check — tries 5 different templates before skipping
+  ✅ Telegram alert when post skipped due to duplicate
+  ✅ Google Indexing API after each publish
 
 File structure:
-  auto_posts.py              ← this script (settings only)
-  keywords.txt               ← your seed keywords
-  intros.txt                 ← intro paragraph templates (split by ---)
-  meta_descriptions.txt      ← meta description templates (split by ---)
+  auto_posts.py              ← this script
+  keywords.txt               ← your seed keywords (one per line)
+  intros.txt                 ← intro templates (blocks split by ---)
+  meta_descriptions.txt      ← meta desc templates (blocks split by ---)
   title_templates.txt        ← title templates (one per line)
   subheading_fallbacks.txt   ← fallback sets (one set per line, comma separated)
   service_account.json       ← Google Indexing API key
@@ -40,9 +50,12 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "your_token")
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "your_chat_id")
 
 # --- Post settings ---
-POSTS_PER_RUN      = 1
-IMAGES_PER_HEADING = 10
-POST_STATUS        = "draft"   # "draft" or "publish"
+POSTS_PER_RUN      = 10           # 10 posts per day
+IMAGES_PER_HEADING = 10           # 10 images per heading = 50 images per post
+POST_STATUS        = "publish"    # publish instantly — gap handled by script sleep
+
+# --- Gap between posts ---
+POST_GAP_SECONDS   = 7200         # 2 hours = 7200 seconds
 
 # --- Google Indexing ---
 SERVICE_ACCOUNT_FILE = "service_account.json"
@@ -51,10 +64,10 @@ SERVICE_ACCOUNT_FILE = "service_account.json"
 FALLBACK_CATEGORY = "Trending"
 
 # --- All content files ---
-KEYWORDS_FILE           = "keywords.txt"
-INTROS_FILE             = "intros.txt"
-META_DESCRIPTIONS_FILE  = "meta_descriptions.txt"
-TITLE_TEMPLATES_FILE    = "title_templates.txt"
+KEYWORDS_FILE            = "keywords.txt"
+INTROS_FILE              = "intros.txt"
+META_DESCRIPTIONS_FILE   = "meta_descriptions.txt"
+TITLE_TEMPLATES_FILE     = "title_templates.txt"
 SUBHEADING_FALLBACK_FILE = "subheading_fallbacks.txt"
 
 # --- Tracking files ---
@@ -74,17 +87,21 @@ AUTH = (USERNAME, APP_PASSWORD)
 class RunStats:
     def __init__(self):
         self.start_time    = datetime.now()
-        self.posts_created = []
-        self.posts_failed  = []
-        self.indexed       = []
-        self.index_failed  = []
+        self.posts_created = []   # {title, link, category, keyword, published_at}
+        self.posts_failed  = []   # list of keywords that failed
+        self.posts_skipped = []   # {keyword, title} — all 5 attempts were duplicates
+        self.indexed       = []   # URLs submitted to Google
+        self.index_failed  = []   # URLs that failed indexing
         self.keywords_used = []
         self.dry_run       = False
 
     def elapsed(self):
         delta = datetime.now() - self.start_time
-        mins  = int(delta.total_seconds() // 60)
+        hours = int(delta.total_seconds() // 3600)
+        mins  = int((delta.total_seconds() % 3600) // 60)
         secs  = int(delta.total_seconds() % 60)
+        if hours > 0:
+            return f"{hours}h {mins}m {secs}s"
         return f"{mins}m {secs}s"
 
 
@@ -111,8 +128,8 @@ def log(msg):
 def load_text_list(filepath, split_by="---"):
     """
     Loads a .txt file and returns a list of non-empty entries.
-    If split_by is set, splits the file by that separator (for multi-line blocks).
-    If split_by is None, returns one entry per line.
+    split_by=None  → one entry per line (ignores # comments)
+    split_by="---" → splits file into blocks by --- separator
     """
     if not os.path.exists(filepath):
         log(f"  ⚠ File not found: {filepath}")
@@ -124,8 +141,10 @@ def load_text_list(filepath, split_by="---"):
     if split_by:
         entries = [e.strip() for e in content.split(split_by) if e.strip()]
     else:
-        entries = [line.strip() for line in content.splitlines()
-                   if line.strip() and not line.strip().startswith("#")]
+        entries = [
+            line.strip() for line in content.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
 
     log(f"  Loaded {len(entries)} entries from {filepath}")
     return entries
@@ -134,10 +153,10 @@ def load_text_list(filepath, split_by="---"):
 def load_subheading_fallbacks():
     """
     Loads subheading_fallbacks.txt.
-    Each line is one fallback set, words separated by comma.
-    Returns a list of lists.
+    Each line = one fallback set, words separated by comma.
+    Returns list of lists.
     """
-    lines = load_text_list(SUBHEADING_FALLBACK_FILE, split_by=None)
+    lines  = load_text_list(SUBHEADING_FALLBACK_FILE, split_by=None)
     result = []
     for line in lines:
         parts = [p.strip() for p in line.split(",") if p.strip()]
@@ -148,10 +167,7 @@ def load_subheading_fallbacks():
 
 
 def load_keywords_from_file():
-    """
-    Reads seed keywords from keywords.txt.
-    Lines starting with # and empty lines are ignored.
-    """
+    """Reads seed keywords from keywords.txt."""
     seeds = load_text_list(KEYWORDS_FILE, split_by=None)
     log(f"  Loaded {len(seeds)} seed keywords from {KEYWORDS_FILE}")
     return seeds
@@ -197,19 +213,21 @@ def build_telegram_summary(stats):
         f"<b>Time Taken:</b> {stats.elapsed()}",
         "",
         "<b>📊 Summary</b>",
-        f"✅ Posts Created   : <b>{len(stats.posts_created)}</b>",
-        f"❌ Posts Failed    : <b>{len(stats.posts_failed)}</b>",
-        f"🔍 Indexed (Google): <b>{len(stats.indexed)}</b>",
-        f"⚠️ Index Failed    : <b>{len(stats.index_failed)}</b>",
+        f"✅ Posts Published  : <b>{len(stats.posts_created)}</b>",
+        f"❌ Posts Failed     : <b>{len(stats.posts_failed)}</b>",
+        f"⏭️ Posts Skipped    : <b>{len(stats.posts_skipped)}</b>",
+        f"🔍 Google Indexed   : <b>{len(stats.indexed)}</b>",
+        f"⚠️ Index Failed     : <b>{len(stats.index_failed)}</b>",
         "",
     ]
 
     if stats.posts_created:
-        lines.append("<b>📝 Posts Created:</b>")
+        lines.append("<b>📝 Posts Published:</b>")
         for i, p in enumerate(stats.posts_created, 1):
             lines.append(
                 f"{i}. <b>{p['title']}</b>\n"
                 f"   📂 {p['category']} | 🔑 {p['keyword']}\n"
+                f"   🕐 {p['published_at']}\n"
                 f"   🔗 <a href=\"{p['link']}\">{p['link']}</a>"
             )
         lines.append("")
@@ -218,6 +236,12 @@ def build_telegram_summary(stats):
         lines.append("<b>❌ Failed Keywords:</b>")
         for kw in stats.posts_failed:
             lines.append(f"  • {kw}")
+        lines.append("")
+
+    if stats.posts_skipped:
+        lines.append("<b>⏭️ Skipped (All 5 titles duplicate):</b>")
+        for s in stats.posts_skipped:
+            lines.append(f"  • {s['keyword']}")
         lines.append("")
 
     if stats.indexed:
@@ -233,7 +257,7 @@ def build_telegram_summary(stats):
         lines.append("")
 
     lines.append("─────────────────────")
-    lines.append("<i>unityimage.com | Auto Posts v14</i>")
+    lines.append("<i>unityimage.com | Auto Posts v15</i>")
 
     return "\n".join(lines)
 
@@ -299,6 +323,10 @@ def fetch_autocomplete(seed):
 
 
 def collect_keywords(used_keywords):
+    """
+    Loads seeds from keywords.txt → expands via Google Autocomplete
+    → filters used keywords → warns if running low.
+    """
     seeds = load_keywords_from_file()
 
     if not seeds:
@@ -312,6 +340,7 @@ def collect_keywords(used_keywords):
         all_kws.extend(suggestions)
         time.sleep(0.5)
 
+    # Also include seeds themselves
     all_kws.extend(seeds)
 
     seen, unique = set(), []
@@ -333,10 +362,7 @@ def collect_keywords(used_keywords):
 # ============================================================
 
 def title_case_keyword(kw):
-    """
-    Converts keyword to title case.
-    e.g. 'hidden face girl dp' → 'Hidden Face Girl DP'
-    """
+    """'hidden face girl dp' → 'Hidden Face Girl DP'"""
     always_upper = {"dp", "hd", "4k"}
     stop_words   = {"a", "an", "the", "and", "or", "for", "of", "in", "on", "at", "to"}
     words  = kw.split()
@@ -352,55 +378,70 @@ def title_case_keyword(kw):
 
 
 # ============================================================
-# TITLE GENERATOR — loads from title_templates.txt
+# TITLE GENERATOR
 # ============================================================
 
 def generate_title(kw):
-    """
-    Picks a random title template from title_templates.txt
-    and replaces {kw} with the title-cased keyword.
-    """
+    """Picks a random template from title_templates.txt."""
     templates = load_text_list(TITLE_TEMPLATES_FILE, split_by=None)
-
     if not templates:
-        # Hard fallback if file is missing
         log("  ⚠ title_templates.txt empty or missing — using fallback")
         templates = ["Best {kw} HD Images Free Download"]
-
     template = random.choice(templates)
     return template.replace("{kw}", title_case_keyword(kw))
 
 
+def generate_unique_title(kw, existing_titles, max_attempts=5):
+    """
+    Tries up to max_attempts different title templates for the keyword.
+    Returns (title, success):
+      success=True  → unique title found
+      success=False → all attempts produced duplicate titles → skip keyword
+    """
+    templates = load_text_list(TITLE_TEMPLATES_FILE, split_by=None)
+    if not templates:
+        templates = ["Best {kw} HD Images Free Download"]
+
+    # Shuffle so each attempt tries a different template
+    shuffled  = templates[:]
+    random.shuffle(shuffled)
+    pretty_kw = title_case_keyword(kw)
+
+    for attempt, template in enumerate(shuffled[:max_attempts], 1):
+        candidate = template.replace("{kw}", pretty_kw)
+        if candidate.strip().lower() not in existing_titles:
+            if attempt > 1:
+                log(f"  ↻ Attempt {attempt} — unique title found: '{candidate}'")
+            return candidate, True
+        else:
+            log(f"  ✗ Attempt {attempt} — duplicate: '{candidate}'")
+
+    # All attempts failed
+    return shuffled[0].replace("{kw}", pretty_kw), False
+
+
 # ============================================================
-# FOCUS KEYWORD — clean keyword only, no template wrapping
+# FOCUS KEYWORD
 # ============================================================
 
 def generate_focus_keyword(kw):
     """
-    Returns only the clean title-cased keyword.
-    e.g. 'hidden face girl dp' → 'Hidden Face Girl DP'
-    No numbers, no brackets, no template text.
+    Clean title-cased keyword only — no numbers, brackets or template text.
     This is set as the Yoast SEO focus keyphrase.
     """
     return title_case_keyword(kw)
 
 
 # ============================================================
-# INTRO GENERATOR — loads from intros.txt
+# INTRO GENERATOR
 # ============================================================
 
 def generate_intro(keyword):
-    """
-    Picks a random intro from intros.txt (blocks split by ---).
-    Replaces {topic} with the title-cased keyword.
-    """
+    """Picks a random intro from intros.txt, replaces {topic} with keyword."""
     intros = load_text_list(INTROS_FILE, split_by="---")
-
     if not intros:
         log("  ⚠ intros.txt empty or missing — using fallback")
-        intros = [
-            "Welcome to the best {topic} collection available for free download in HD quality."
-        ]
+        intros = ["Welcome to the best {topic} collection free in HD quality."]
 
     pretty   = title_case_keyword(keyword)
     template = random.choice(intros)
@@ -410,28 +451,24 @@ def generate_intro(keyword):
 
 
 # ============================================================
-# META DESCRIPTION — loads from meta_descriptions.txt
+# META DESCRIPTION GENERATOR
 # ============================================================
 
 def generate_meta_description(keyword):
     """
     Picks a random meta description from meta_descriptions.txt.
-    Replaces {topic} with the clean title-cased keyword.
-    Truncates to 155 chars max for SEO.
+    Replaces {topic} with clean title-cased keyword.
+    Max 155 chars for SEO.
     """
     descriptions = load_text_list(META_DESCRIPTIONS_FILE, split_by="---")
-
     if not descriptions:
         log("  ⚠ meta_descriptions.txt empty or missing — using fallback")
-        descriptions = [
-            "Download the best {topic} HD images free for Instagram and WhatsApp."
-        ]
+        descriptions = ["Download the best {topic} HD images free for Instagram and WhatsApp."]
 
     pretty   = title_case_keyword(keyword)
     template = random.choice(descriptions)
     meta     = template.replace("{topic}", pretty).strip()
 
-    # Truncate to 155 chars for SEO
     if len(meta) > 155:
         meta = meta[:152] + "..."
 
@@ -440,7 +477,7 @@ def generate_meta_description(keyword):
 
 
 # ============================================================
-# SUBHEADINGS — loads fallbacks from subheading_fallbacks.txt
+# SUBHEADINGS
 # ============================================================
 
 def fetch_subheadings_from_google(keyword, count=5):
@@ -461,9 +498,7 @@ def fetch_subheadings_from_google(keyword, count=5):
 
     if len(result) < count:
         fallback_sets = load_subheading_fallbacks()
-
         if not fallback_sets:
-            # Hard fallback if file missing
             fallback_sets = [["Stylish", "Cute", "Aesthetic", "Attitude", "Sad"]]
 
         modifier_set = random.choice(fallback_sets)
@@ -487,7 +522,7 @@ def fetch_subheadings_from_google(keyword, count=5):
 
 def request_google_indexing(post_url):
     if not os.path.exists(SERVICE_ACCOUNT_FILE):
-        log(f"  ⚠ {SERVICE_ACCOUNT_FILE} not found — skipping indexing request")
+        log(f"  ⚠ {SERVICE_ACCOUNT_FILE} not found — skipping indexing")
         STATS.index_failed.append(post_url)
         return
 
@@ -499,7 +534,6 @@ def request_google_indexing(post_url):
             SERVICE_ACCOUNT_FILE,
             scopes=["https://www.googleapis.com/auth/indexing"]
         )
-
         auth_req = google.auth.transport.requests.Request()
         credentials.refresh(auth_req)
 
@@ -507,14 +541,11 @@ def request_google_indexing(post_url):
             "Content-Type":  "application/json",
             "Authorization": f"Bearer {credentials.token}"
         }
-
         body = {"url": post_url, "type": "URL_UPDATED"}
 
         r = requests.post(
             "https://indexing.googleapis.com/v3/urlNotifications:publish",
-            headers=headers,
-            json=body,
-            timeout=15
+            headers=headers, json=body, timeout=15
         )
 
         if r.status_code == 200:
@@ -530,6 +561,51 @@ def request_google_indexing(post_url):
     except Exception as e:
         log(f"  ✗ Indexing error: {e}")
         STATS.index_failed.append(post_url)
+
+
+# ============================================================
+# WP EXISTING TITLES — for duplicate check
+# ============================================================
+
+def fetch_existing_titles():
+    """
+    Fetches all existing post titles from WordPress (published + scheduled + draft).
+    Returns a set of lowercased titles for fast duplicate lookup.
+    """
+    log("  Fetching existing post titles from WordPress...")
+    all_titles = set()
+    page = 1
+
+    while True:
+        try:
+            r = requests.get(
+                f"{WP_URL}/posts",
+                params={
+                    "per_page": 100,
+                    "page":     page,
+                    "status":   "publish,future,draft",
+                    "_fields":  "title",
+                },
+                auth=AUTH,
+                timeout=30
+            )
+            if r.status_code != 200:
+                break
+            data = r.json()
+            if not data:
+                break
+            for post in data:
+                raw = post.get("title", {})
+                t   = raw.get("rendered", "") if isinstance(raw, dict) else str(raw)
+                all_titles.add(t.strip().lower())
+            page += 1
+            time.sleep(0.3)
+        except Exception as e:
+            log(f"  ⚠ Error fetching titles page {page}: {e}")
+            break
+
+    log(f"  Fetched {len(all_titles)} existing post titles")
+    return all_titles
 
 
 # ============================================================
@@ -626,8 +702,8 @@ def build_html_gallery(subheadings, all_media, images_per_heading, keyword, intr
     html_parts = []
 
     if intro_text:
-        # Bold the focus keyword (topic) in intro and set font size to 20px
-        pretty_kw_bold = f'<strong>{pretty_kw}</strong>'
+        # Keyword in bold, font size 20px
+        pretty_kw_bold  = f"<strong>{pretty_kw}</strong>"
         intro_formatted = intro_text.replace(pretty_kw, pretty_kw_bold)
         html_parts.append(
             f'<p style="font-size:20px;line-height:1.8;margin-bottom:28px;color:#333;">'
@@ -666,18 +742,22 @@ def build_html_gallery(subheadings, all_media, images_per_heading, keyword, intr
 
 
 # ============================================================
-# CREATE WORDPRESS POST — NO featured image
+# CREATE WORDPRESS POST
 # ============================================================
 
 def create_wp_post(title, content, category_id, focus_kw, meta_desc):
+    """
+    Publishes a WordPress post instantly with status='publish'.
+    No featured image. Yoast SEO fields auto-filled.
+    """
     data = {
         "title":      title,
         "content":    content,
         "status":     POST_STATUS,
         "categories": [category_id],
         "meta": {
-            "_yoast_wpseo_focuskw":  focus_kw,   # clean keyword only
-            "_yoast_wpseo_metadesc": meta_desc,   # from meta_descriptions.txt
+            "_yoast_wpseo_focuskw":  focus_kw,
+            "_yoast_wpseo_metadesc": meta_desc,
         }
     }
     try:
@@ -685,23 +765,23 @@ def create_wp_post(title, content, category_id, focus_kw, meta_desc):
         result = r.json()
 
         if r.status_code not in (200, 201):
-            log(f"  WP API error {r.status_code}")
-            log(f"  WP error code   : {result.get('code', 'unknown')}")
-            log(f"  WP error message: {result.get('message', 'unknown')}")
-            log(f"  WP error data   : {result.get('data', {})}")
+            log(f"  ✗ WP API error {r.status_code}")
+            log(f"  ✗ Code   : {result.get('code', 'unknown')}")
+            log(f"  ✗ Message: {result.get('message', 'unknown')}")
+            log(f"  ✗ Data   : {result.get('data', {})}")
             send_telegram(
-                f"\u274c <b>Post Creation Failed</b>\n\n"
+                f"❌ <b>Post Creation Failed</b>\n\n"
                 f"<b>Status:</b> {r.status_code}\n"
                 f"<b>Code:</b> {result.get('code', 'unknown')}\n"
                 f"<b>Message:</b> {result.get('message', 'unknown')}\n"
-                f"<b>Title:</b> {data['title']}"
+                f"<b>Title:</b> {title}"
             )
             return None, ""
 
         return result.get("id"), result.get("link", "")
 
     except Exception as e:
-        log(f"  WP post creation error: {e}")
+        log(f"  ✗ WP post creation error: {e}")
         return None, ""
 
 
@@ -713,13 +793,15 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
     STATS.dry_run = dry_run
 
     log("=" * 60)
-    log(f"Auto Posts v14 | target={posts_to_create} posts | dry_run={dry_run}")
+    log(f"Auto Posts v15 | target={posts_to_create} posts | dry_run={dry_run}")
+    log(f"Gap between posts: {POST_GAP_SECONDS // 3600}h {(POST_GAP_SECONDS % 3600) // 60}m")
     log("=" * 60)
 
     send_telegram(
         f"🚀 <b>Auto Posts Started</b>\n"
         f"Mode: {'DRY RUN' if dry_run else 'LIVE'}\n"
         f"Target: {posts_to_create} post(s)\n"
+        f"Gap: {POST_GAP_SECONDS // 3600} hours between each post\n"
         f"Time: {STATS.start_time.strftime('%d %b %Y, %I:%M %p')}"
     )
 
@@ -747,8 +829,8 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
     if not keywords:
         msg = (
             "🚨 <b>No fresh keywords found!</b>\n\n"
-            "All keywords in <code>keywords.txt</code> are either used up or the file is empty.\n"
-            "Please add new keywords to <code>keywords.txt</code> and push to GitHub."
+            "All keywords in <code>keywords.txt</code> are either used up or empty.\n"
+            "Please add new keywords and push to GitHub."
         )
         log("No fresh keywords found. Exiting.")
         send_telegram(msg)
@@ -772,19 +854,39 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
             for i in range(1, 500)
         ]
 
-    for kw in selected:
-        log(f"\n--- Keyword: '{kw}' ---")
+    # Fetch all existing titles once for duplicate checking
+    existing_titles = fetch_existing_titles() if not dry_run else set()
 
-        title     = generate_title(kw)
-        focus_kw  = generate_focus_keyword(kw)     # clean keyword only → Yoast
-        intro     = generate_intro(kw)             # from intros.txt
-        meta_desc = generate_meta_description(kw)  # from meta_descriptions.txt
+    # ── Main loop ─────────────────────────────────────────────
+    for i, kw in enumerate(selected):
+        log(f"\n--- Post {i+1}/{len(selected)} | Keyword: '{kw}' ---")
 
+        # ── Smart duplicate title check (up to 5 attempts) ───
+        title, is_unique = generate_unique_title(kw, existing_titles, max_attempts=5)
+
+        if not is_unique:
+            log(f"  ⏭ All 5 title attempts were duplicates — skipping: '{kw}'")
+            send_telegram(
+                f"⏭️ <b>Post Skipped — All Titles Duplicate</b>\n\n"
+                f"🔑 Keyword: <b>{kw}</b>\n"
+                f"📝 Last Title: {title}\n\n"
+                f"Tried 5 different title templates — all already exist in WordPress.\n"
+                f"Keyword skipped for this run."
+            )
+            STATS.posts_skipped.append({"keyword": kw, "title": title})
+            continue
+        # ──────────────────────────────────────────────────────
+
+        focus_kw    = generate_focus_keyword(kw)
+        intro       = generate_intro(kw)
+        meta_desc   = generate_meta_description(kw)
         subheadings = fetch_subheadings_from_google(kw, count=5)
         category_id = match_category(title, categories)
+        cat_name    = next((c["name"] for c in categories if c["id"] == category_id), "Unknown")
 
         log(f"  Title      : {title}")
         log(f"  Focus KW   : {focus_kw}")
+        log(f"  Category   : {cat_name}")
         log(f"  Subheadings: {' | '.join(subheadings)}")
         log(f"  Meta Desc  : {meta_desc[:80]}...")
 
@@ -792,48 +894,62 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
             subheadings, all_media, IMAGES_PER_HEADING, kw, intro
         )
 
-        cat_name = next((c["name"] for c in categories if c["id"] == category_id), "Unknown")
-
         if dry_run:
-            log(f"  [DRY RUN] Would create : '{title}'")
-            log(f"  [DRY RUN] Focus KW     : {focus_kw}")
-            log(f"  [DRY RUN] Category     : {cat_name} (ID={category_id})")
-            log(f"  [DRY RUN] Sections     : {len(subheadings)}")
-            log(f"  [DRY RUN] HTML size    : {len(html_content)} chars")
+            log(f"  [DRY RUN] Would publish : '{title}'")
+            log(f"  [DRY RUN] Category      : {cat_name} (ID={category_id})")
+            log(f"  [DRY RUN] HTML size     : {len(html_content)} chars")
 
             STATS.posts_created.append({
-                "title":    title,
-                "link":     "https://unityimage.com/?p=DRY_RUN",
-                "category": cat_name,
-                "keyword":  kw,
+                "title":        title,
+                "link":         "https://unityimage.com/?p=DRY_RUN",
+                "category":     cat_name,
+                "keyword":      kw,
+                "published_at": datetime.now().strftime("%d %b %Y %I:%M %p"),
             })
+
         else:
             post_id, post_link = create_wp_post(
                 title, html_content, category_id, focus_kw, meta_desc
             )
 
             if post_id:
-                log(f"  ✓ Post created! ID={post_id} | Category={cat_name} | {post_link}")
+                published_at = datetime.now().strftime("%d %b %Y %I:%M %p")
+                log(f"  ✓ Published! ID={post_id} | {published_at} | {post_link}")
                 save_used_keyword(kw)
+                existing_titles.add(title.strip().lower())  # prevent same-run duplicates
 
                 STATS.posts_created.append({
-                    "title":    title,
-                    "link":     post_link,
-                    "category": cat_name,
-                    "keyword":  kw,
+                    "title":        title,
+                    "link":         post_link,
+                    "category":     cat_name,
+                    "keyword":      kw,
+                    "published_at": published_at,
                 })
 
-                if POST_STATUS == "publish" and post_link:
-                    request_google_indexing(post_link)
+                request_google_indexing(post_link)
 
             else:
                 log(f"  ✗ Failed to create post for '{kw}'")
                 STATS.posts_failed.append(kw)
 
-        time.sleep(2)
+        # ── Wait 2 hours before next post (skip wait after last post) ──
+        if i < len(selected) - 1:
+            if dry_run:
+                log(f"  [DRY RUN] Would wait {POST_GAP_SECONDS // 3600} hours before next post")
+            else:
+                next_time = datetime.now()
+                wait_until = next_time.replace(
+                    second=next_time.second + POST_GAP_SECONDS
+                )
+                log(f"  ⏳ Waiting {POST_GAP_SECONDS // 3600} hours before next post...")
+                log(f"  ⏳ Next post at approximately: {(datetime.now()).strftime('%I:%M %p')} + 2h")
+                time.sleep(POST_GAP_SECONDS)
+        # ────────────────────────────────────────────────────────────────
 
+    # ── Final Summary ─────────────────────────────────────────
     log(f"\n{'='*60}")
-    log(f"Done | Created: {len(STATS.posts_created)} | Failed: {len(STATS.posts_failed)}")
+    log(f"Done | Published: {len(STATS.posts_created)} | Failed: {len(STATS.posts_failed)} | Skipped: {len(STATS.posts_skipped)}")
+    log(f"Total time: {STATS.elapsed()}")
     log(f"{'='*60}\n")
 
     summary = build_telegram_summary(STATS)
@@ -845,7 +961,7 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
 # ============================================================
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Auto WordPress Post Creator v14")
+    parser = argparse.ArgumentParser(description="Auto WordPress Post Creator v15")
     parser.add_argument("--posts",   type=int,           default=POSTS_PER_RUN, help="Number of posts to create")
     parser.add_argument("--dry-run", action="store_true",                        help="Preview without posting to WordPress")
     args = parser.parse_args()
