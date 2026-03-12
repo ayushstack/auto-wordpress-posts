@@ -1,10 +1,10 @@
 # ============================================================
-# GitHub Actions — Auto WordPress Post Creator v15
+# GitHub Actions — Auto WordPress Post Creator v17
 # Runs every day at 10:00 AM IST (India Standard Time)
 # IST = UTC + 5:30  →  10:00 AM IST = 04:30 UTC
 #
 # Script publishes 10 posts with 2 hour real gap between each.
-# Total runtime = ~20 hours → timeout set to 630 minutes (10.5 hours buffer)
+# Total runtime = ~20 hours → timeout set to 1260 minutes (21 hours)
 # ============================================================
 
 name: Auto WordPress Posts
@@ -28,7 +28,7 @@ on:
 jobs:
   run-auto-posts:
     runs-on: ubuntu-latest
-    timeout-minutes: 630   # 10 posts x 2 hours = 20 hours + 30 min buffer
+    timeout-minutes: 1260   # 10 posts x 2 hours = 20 hours + 1 hour buffer
 
     steps:
       # ── 1. Checkout repo ───────────────────────────────────
@@ -44,14 +44,9 @@ jobs:
       # ── 3. Install dependencies ────────────────────────────
       - name: Install dependencies
         run: |
-          pip install requests google-auth
+          pip install requests
 
-      # ── 4. Write service_account.json ─────────────────────
-      - name: Write service_account.json
-        run: |
-          echo '${{ secrets.SERVICE_ACCOUNT_JSON }}' > service_account.json
-
-      # ── 5. Restore used_keywords.txt from cache ────────────
+      # ── 4. Restore used_keywords.txt from cache ────────────
       - name: Restore used keywords cache
         uses: actions/cache@v4
         with:
@@ -60,7 +55,7 @@ jobs:
           restore-keys: |
             used-keywords-
 
-      # ── 6. Run the script ──────────────────────────────────
+      # ── 5. Run the script ──────────────────────────────────
       - name: Run auto_posts.py
         env:
           WP_USERNAME:         ${{ secrets.WP_USERNAME }}
@@ -77,7 +72,7 @@ jobs:
             python auto_posts.py --posts "$POSTS"
           fi
 
-      # ── 7. Upload logs ─────────────────────────────────────
+      # ── 6. Upload logs ─────────────────────────────────────
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -86,7 +81,7 @@ jobs:
           path: logs/
           retention-days: 30
 
-      # ── 8. Commit used_keywords.txt back to repo ───────────
+      # ── 7. Commit used_keywords.txt back to repo ───────────
       - name: Commit used_keywords.txt
         if: success()
         run: |

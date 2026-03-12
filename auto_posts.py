@@ -1,12 +1,10 @@
 """
-auto_posts.py — Fully Automatic WordPress Post Creator (v16)
+auto_posts.py — Fully Automatic WordPress Post Creator (v17)
 ============================================================
-Changes from v15:
-  ✅ Duplicate title → skip immediately (no retries)
-  ✅ Clean permalink slug from keyword only (no filler words, numbers, symbols, emojis)
-  ✅ Slug already exists → try variation words (hd, 4k, new, latest...)
-  ✅ All slug variations exist → skip keyword
-  ✅ Fixed timedelta bug from v15 (ValueError: second must be in 0..59)
+Changes from v16:
+  ✅ Removed Google Indexing API completely — sitemap handles indexing
+  ✅ Removed service_account.json dependency
+  ✅ Cleaner and simpler code
 
 File structure:
   auto_posts.py              ← this script
@@ -15,7 +13,6 @@ File structure:
   meta_descriptions.txt      ← meta desc templates (blocks split by ---)
   title_templates.txt        ← title templates (one per line)
   subheading_fallbacks.txt   ← fallback sets (one set per line, comma separated)
-  service_account.json       ← Google Indexing API key
 """
 
 import requests
@@ -39,25 +36,19 @@ TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "your_chat_id")
 
 # --- Post settings ---
 POSTS_PER_RUN      = 2            # change to 10 for production
-IMAGES_PER_HEADING = 25          # 10 images per heading = 50 images per post
+IMAGES_PER_HEADING = 25           # images per heading
 POST_STATUS        = "publish"    # publish instantly
 
 # --- Gap between posts ---
 POST_GAP_SECONDS   = 60           # change to 7200 for 2 hour gap in production
 
 # --- Slug variation words (tried in order if base slug already exists) ---
-SLUG_VARIATIONS = ["hd", "4k", "new", "latest", "best", "cute", "stylish", "aesthetic", "beautiful", "cool"]
+SLUG_VARIATIONS = ["hd", "4k", "new", "latest", "best", "images", "3d"]
 
 # --- Words to remove from slug ---
 SLUG_REMOVE_WORDS = {
-    "free", "download", "top", "best", "hd", "images", "photos",
-    "pictures", "collection", "wallpapers", "image", "photo",
-    "wallpaper", "gallery", "pic", "pics", "and", "for", "the",
-    "with", "your", "our", "all", "new", "latest"
+    "free", "download"
 }
-
-# --- Google Indexing ---
-SERVICE_ACCOUNT_FILE = "service_account.json"
 
 # --- Fallback category ---
 FALLBACK_CATEGORY = "Trending"
@@ -89,8 +80,6 @@ class RunStats:
         self.posts_created = []   # list of dicts
         self.posts_failed  = []   # list of keywords
         self.posts_skipped = []   # list of dicts {keyword, reason}
-        self.indexed       = []   # URLs submitted to Google
-        self.index_failed  = []   # URLs that failed indexing
         self.keywords_used = []
         self.dry_run       = False
 
@@ -204,8 +193,6 @@ def build_telegram_summary(stats):
         f"✅ Posts Published  : <b>{len(stats.posts_created)}</b>",
         f"❌ Posts Failed     : <b>{len(stats.posts_failed)}</b>",
         f"⏭️ Posts Skipped    : <b>{len(stats.posts_skipped)}</b>",
-        f"🔍 Google Indexed   : <b>{len(stats.indexed)}</b>",
-        f"⚠️ Index Failed     : <b>{len(stats.index_failed)}</b>",
         "",
     ]
 
@@ -232,20 +219,8 @@ def build_telegram_summary(stats):
             lines.append(f"  • {s['keyword']} — {s['reason']}")
         lines.append("")
 
-    if stats.indexed:
-        lines.append("<b>🔍 Google Indexing Requested:</b>")
-        for url in stats.indexed:
-            lines.append(f"  • {url}")
-        lines.append("")
-
-    if stats.index_failed:
-        lines.append("<b>⚠️ Indexing Failed:</b>")
-        for url in stats.index_failed:
-            lines.append(f"  • {url}")
-        lines.append("")
-
     lines.append("─────────────────────")
-    lines.append("<i>unityimage.com | Auto Posts v16</i>")
+    lines.append("<i>unityimage.com | Auto Posts v17</i>")
 
     return "\n".join(lines)
 
@@ -360,33 +335,23 @@ def title_case_keyword(kw):
 
 
 # ============================================================
-# SLUG GENERATOR — clean permalink from keyword only
+# SLUG GENERATOR
 # ============================================================
 
 def build_clean_slug(kw):
-    """
-    Builds clean slug from keyword only.
-    Removes: filler words, numbers, emojis, symbols.
-    e.g. 'cute anime girl dp for instagram' → 'cute-anime-girl-dp-instagram'
-    """
     # Remove emojis and non-ASCII
     text = re.sub(r'[^\x00-\x7F]+', '', kw.lower())
     # Remove special characters
     text = re.sub(r'[^\w\s]', '', text)
     # Remove standalone numbers
     text = re.sub(r'\b\d+\b', '', text)
-    # Split, filter remove words and empty strings
+    # Filter remove words
     words = [w for w in text.split() if w and w not in SLUG_REMOVE_WORDS]
-    # Join with hyphens
-    slug = "-".join(words).strip("-")
+    slug  = "-".join(words).strip("-")
     return slug
 
 
 def check_slug_exists(slug):
-    """
-    Checks if a slug already exists in WordPress.
-    Returns True if exists, False if free to use.
-    """
     try:
         r = requests.get(
             f"{WP_URL}/posts",
@@ -395,19 +360,13 @@ def check_slug_exists(slug):
             timeout=10
         )
         if r.status_code == 200:
-            data = r.json()
-            return len(data) > 0
+            return len(r.json()) > 0
     except Exception as e:
         log(f"  ⚠ Slug check error: {e}")
     return False
 
 
 def get_unique_slug(kw):
-    """
-    Tries base slug first.
-    If exists → tries base-hd, base-4k, base-new...
-    If all exist → returns (slug, False) → skip keyword.
-    """
     base_slug = build_clean_slug(kw)
     log(f"  Base slug: '{base_slug}'")
 
@@ -430,11 +389,10 @@ def get_unique_slug(kw):
 
 
 # ============================================================
-# TITLE GENERATOR — skip immediately if duplicate
+# TITLE GENERATOR
 # ============================================================
 
 def generate_title(kw):
-    """Picks a random template from title_templates.txt."""
     templates = load_text_list(TITLE_TEMPLATES_FILE, split_by=None)
     if not templates:
         log("  ⚠ title_templates.txt empty or missing — using fallback")
@@ -444,10 +402,6 @@ def generate_title(kw):
 
 
 def get_unique_title(kw, existing_titles):
-    """
-    Generates ONE title. If duplicate → return (title, False) → skip immediately.
-    No retries.
-    """
     title = generate_title(kw)
     if title.strip().lower() in existing_titles:
         log(f"  ✗ Title already exists — skipping: '{title}'")
@@ -536,53 +490,6 @@ def fetch_subheadings_from_google(keyword, count=5):
         log(f"  Fallback added — total subheadings: {len(result)}")
 
     return result[:count]
-
-
-# ============================================================
-# GOOGLE INDEXING API
-# ============================================================
-
-def request_google_indexing(post_url):
-    if not os.path.exists(SERVICE_ACCOUNT_FILE):
-        log(f"  ⚠ {SERVICE_ACCOUNT_FILE} not found — skipping indexing")
-        STATS.index_failed.append(post_url)
-        return
-
-    try:
-        from google.oauth2 import service_account
-        import google.auth.transport.requests
-
-        credentials = service_account.Credentials.from_service_account_file(
-            SERVICE_ACCOUNT_FILE,
-            scopes=["https://www.googleapis.com/auth/indexing"]
-        )
-        auth_req = google.auth.transport.requests.Request()
-        credentials.refresh(auth_req)
-
-        headers = {
-            "Content-Type":  "application/json",
-            "Authorization": f"Bearer {credentials.token}"
-        }
-        body = {"url": post_url, "type": "URL_UPDATED"}
-
-        r = requests.post(
-            "https://indexing.googleapis.com/v3/urlNotifications:publish",
-            headers=headers, json=body, timeout=15
-        )
-
-        if r.status_code == 200:
-            log(f"  ✓ Google indexing requested: {post_url}")
-            STATS.indexed.append(post_url)
-        else:
-            log(f"  ✗ Indexing API error {r.status_code}: {r.text[:120]}")
-            STATS.index_failed.append(post_url)
-
-    except ImportError:
-        log("  ⚠ google-auth not installed — run: pip install google-auth")
-        STATS.index_failed.append(post_url)
-    except Exception as e:
-        log(f"  ✗ Indexing error: {e}")
-        STATS.index_failed.append(post_url)
 
 
 # ============================================================
@@ -763,10 +670,6 @@ def build_html_gallery(subheadings, all_media, images_per_heading, keyword, intr
 # ============================================================
 
 def create_wp_post(title, slug, content, category_id, focus_kw, meta_desc):
-    """
-    Publishes WordPress post instantly with clean explicit slug.
-    No featured image. Yoast SEO fields set.
-    """
     data = {
         "title":      title,
         "slug":       slug,
@@ -810,7 +713,7 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
     STATS.dry_run = dry_run
 
     log("=" * 60)
-    log(f"Auto Posts v16 | target={posts_to_create} posts | dry_run={dry_run}")
+    log(f"Auto Posts v17 | target={posts_to_create} posts | dry_run={dry_run}")
     log(f"Gap between posts: {POST_GAP_SECONDS}s")
     log("=" * 60)
 
@@ -871,14 +774,13 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
             for i in range(1, 500)
         ]
 
-    # Fetch all existing titles once for duplicate check
     existing_titles = fetch_existing_titles() if not dry_run else set()
 
     # ── Main loop ─────────────────────────────────────────────
     for i, kw in enumerate(selected):
         log(f"\n--- Post {i+1}/{len(selected)} | Keyword: '{kw}' ---")
 
-        # ── Step 1: Title duplicate check — skip immediately ──
+        # Step 1: Title duplicate check
         title, title_ok = get_unique_title(kw, existing_titles)
         if not title_ok:
             send_telegram(
@@ -890,7 +792,7 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
             STATS.posts_skipped.append({"keyword": kw, "reason": "duplicate title"})
             continue
 
-        # ── Step 2: Slug check — skip if all variations exist ──
+        # Step 2: Slug check
         slug, slug_ok = get_unique_slug(kw)
         if not slug_ok:
             send_telegram(
@@ -902,7 +804,7 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
             STATS.posts_skipped.append({"keyword": kw, "reason": "all slugs exist"})
             continue
 
-        # ── Step 3: Build post content ──
+        # Step 3: Build post content
         focus_kw    = generate_focus_keyword(kw)
         intro       = generate_intro(kw)
         meta_desc   = generate_meta_description(kw)
@@ -955,13 +857,11 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
                     "published_at": published_at,
                 })
 
-                request_google_indexing(post_link)
-
             else:
                 log(f"  ✗ Failed to create post for '{kw}'")
                 STATS.posts_failed.append(kw)
 
-        # ── Wait between posts (skip wait after last post) ──
+        # Wait between posts
         if i < len(selected) - 1:
             if dry_run:
                 log(f"  [DRY RUN] Would wait {POST_GAP_SECONDS} seconds before next post")
@@ -986,7 +886,7 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
 # ============================================================
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Auto WordPress Post Creator v16")
+    parser = argparse.ArgumentParser(description="Auto WordPress Post Creator v17")
     parser.add_argument("--posts",   type=int,           default=POSTS_PER_RUN, help="Number of posts to create")
     parser.add_argument("--dry-run", action="store_true",                        help="Preview without posting to WordPress")
     args = parser.parse_args()
