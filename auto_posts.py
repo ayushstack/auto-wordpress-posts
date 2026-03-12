@@ -626,9 +626,12 @@ def build_html_gallery(subheadings, all_media, images_per_heading, keyword, intr
     html_parts = []
 
     if intro_text:
+        # Bold the focus keyword (topic) in intro and set font size to 20px
+        pretty_kw_bold = f'<strong>{pretty_kw}</strong>'
+        intro_formatted = intro_text.replace(pretty_kw, pretty_kw_bold)
         html_parts.append(
-            f'<p style="font-size:16px;line-height:1.8;margin-bottom:28px;color:#333;">'
-            f'{intro_text}'
+            f'<p style="font-size:20px;line-height:1.8;margin-bottom:28px;color:#333;">'
+            f'{intro_formatted}'
             f'</p>'
         )
 
