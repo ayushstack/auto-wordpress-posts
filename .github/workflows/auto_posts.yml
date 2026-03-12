@@ -1,5 +1,5 @@
 # ============================================================
-# GitHub Actions — Auto WordPress Post Creator v15
+# GitHub Actions — Auto WordPress Post Creator
 # Runs every day at 10:00 AM IST (India Standard Time)
 # IST = UTC + 5:30  →  10:00 AM IST = 04:30 UTC
 # ============================================================
@@ -16,7 +16,7 @@ on:
       posts:
         description: "Number of posts to create"
         required: false
-        default: "10"
+        default: "1"
       dry_run:
         description: "Dry run? (true/false)"
         required: false
@@ -25,7 +25,6 @@ on:
 jobs:
   run-auto-posts:
     runs-on: ubuntu-latest
-    timeout-minutes: 30   # script creates all posts instantly (scheduled via WP), so 30 min is enough
 
     steps:
       # ── 1. Checkout your repo ──────────────────────────────
@@ -41,14 +40,18 @@ jobs:
       # ── 3. Install dependencies ────────────────────────────
       - name: Install dependencies
         run: |
-          pip install requests google-auth pytz
+          pip install requests google-auth
 
       # ── 4. Write service_account.json from GitHub Secret ──
+      #    Go to: Repo → Settings → Secrets → New secret
+      #    Name: SERVICE_ACCOUNT_JSON
+      #    Value: paste the full contents of your service_account.json
       - name: Write service_account.json
         run: |
           echo '${{ secrets.SERVICE_ACCOUNT_JSON }}' > service_account.json
 
       # ── 5. Restore used_keywords.txt from cache ────────────
+      #    This prevents duplicate posts across runs
       - name: Restore used keywords cache
         uses: actions/cache@v4
         with:
@@ -58,6 +61,7 @@ jobs:
             used-keywords-
 
       # ── 6. Run the script ──────────────────────────────────
+      #    Secrets are set in: Repo → Settings → Secrets and variables → Actions
       - name: Run auto_posts.py
         env:
           WP_USERNAME:         ${{ secrets.WP_USERNAME }}
@@ -65,7 +69,8 @@ jobs:
           TELEGRAM_BOT_TOKEN:  ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          POSTS="${{ github.event.inputs.posts || '10' }}"
+          # Determine args (manual trigger vs scheduled)
+          POSTS="${{ github.event.inputs.posts || '1' }}"
           DRY="${{ github.event.inputs.dry_run || 'false' }}"
 
           if [ "$DRY" = "true" ]; then
@@ -74,7 +79,7 @@ jobs:
             python auto_posts.py --posts "$POSTS"
           fi
 
-      # ── 7. Save logs as artifact ───────────────────────────
+      # ── 7. Save logs as artifact (downloadable from GitHub) ─
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -84,6 +89,7 @@ jobs:
           retention-days: 30
 
       # ── 8. Commit updated used_keywords.txt back to repo ───
+      #    So next run knows which keywords were already used
       - name: Commit used_keywords.txt
         if: success()
         run: |

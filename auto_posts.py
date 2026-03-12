@@ -1,4 +1,5 @@
-"""\nauto_posts.py — Fully Automatic WordPress Post Creator (v15)
+"""
+auto_posts.py — Fully Automatic WordPress Post Creator (v14)
 ============================================================
 Changes from v13:
   ✅ Intros loaded from intros.txt
@@ -25,8 +26,7 @@ import re
 import time
 import argparse
 import os
-from datetime import datetime, timedelta
-import pytz
+from datetime import datetime
 
 
 # ============================================================
@@ -40,14 +40,9 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "your_token")
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "your_chat_id")
 
 # --- Post settings ---
-POSTS_PER_RUN      = 10          # 10 posts per day
+POSTS_PER_RUN      = 1
 IMAGES_PER_HEADING = 10
-POST_STATUS        = "future"    # "future" = scheduled, "publish" = instant
-
-# --- Scheduling: 2 hour gap between posts, starting at 10 AM IST ---
-SCHEDULE_START_HOUR   = 10       # 10 AM IST
-SCHEDULE_GAP_HOURS    = 2        # 2 hours between each post
-SCHEDULE_TIMEZONE     = "Asia/Kolkata"  # IST
+POST_STATUS        = "draft"   # "draft" or "publish"
 
 # --- Google Indexing ---
 SERVICE_ACCOUNT_FILE = "service_account.json"
@@ -84,7 +79,6 @@ class RunStats:
         self.indexed       = []
         self.index_failed  = []
         self.keywords_used = []
-        self.posts_skipped = []   # duplicate titles skipped
         self.dry_run       = False
 
     def elapsed(self):
@@ -213,11 +207,9 @@ def build_telegram_summary(stats):
     if stats.posts_created:
         lines.append("<b>📝 Posts Created:</b>")
         for i, p in enumerate(stats.posts_created, 1):
-            sched = p.get("scheduled", "")
             lines.append(
                 f"{i}. <b>{p['title']}</b>\n"
                 f"   📂 {p['category']} | 🔑 {p['keyword']}\n"
-                f"   🕐 {sched}\n"
                 f"   🔗 <a href=\"{p['link']}\">{p['link']}</a>"
             )
         lines.append("")
@@ -240,14 +232,8 @@ def build_telegram_summary(stats):
             lines.append(f"  • {url}")
         lines.append("")
 
-    if stats.posts_skipped:
-        lines.append("<b>⏭️ Skipped (Duplicate Title):</b>")
-        for s in stats.posts_skipped:
-            lines.append(f"  • {s['keyword']} → <i>{s['title']}</i>")
-        lines.append("")
-
     lines.append("─────────────────────")
-    lines.append("<i>unityimage.com | Auto Posts v15</i>")
+    lines.append("<i>unityimage.com | Auto Posts v14</i>")
 
     return "\n".join(lines)
 
@@ -547,51 +533,6 @@ def request_google_indexing(post_url):
 
 
 # ============================================================
-# WP EXISTING TITLES — fetch once to check duplicates
-# ============================================================
-
-def fetch_existing_titles():
-    """
-    Fetches all existing post titles from WordPress (published + scheduled).
-    Returns a set of lowercased titles for fast lookup.
-    """
-    log("  Fetching existing post titles from WordPress...")
-    all_titles = set()
-    page = 1
-
-    while True:
-        try:
-            r = requests.get(
-                f"{WP_URL}/posts",
-                params={
-                    "per_page": 100,
-                    "page":     page,
-                    "status":   "publish,future,draft",
-                    "fields":   "title",
-                },
-                auth=AUTH,
-                timeout=30
-            )
-            if r.status_code != 200:
-                break
-            data = r.json()
-            if not data:
-                break
-            for post in data:
-                raw = post.get("title", {})
-                t   = raw.get("rendered", "") if isinstance(raw, dict) else str(raw)
-                all_titles.add(t.strip().lower())
-            page += 1
-            time.sleep(0.3)
-        except Exception as e:
-            log(f"  ⚠ Error fetching titles page {page}: {e}")
-            break
-
-    log(f"  Fetched {len(all_titles)} existing post titles")
-    return all_titles
-
-
-# ============================================================
 # WP CATEGORIES
 # ============================================================
 
@@ -728,21 +669,17 @@ def build_html_gallery(subheadings, all_media, images_per_heading, keyword, intr
 # CREATE WORDPRESS POST — NO featured image
 # ============================================================
 
-def create_wp_post(title, content, category_id, focus_kw, meta_desc, scheduled_date=None):
-    # Use scheduled date if provided, otherwise publish immediately
-    status = "future" if scheduled_date else "publish"
+def create_wp_post(title, content, category_id, focus_kw, meta_desc):
     data = {
         "title":      title,
         "content":    content,
-        "status":     status,
+        "status":     POST_STATUS,
         "categories": [category_id],
         "meta": {
-            "_yoast_wpseo_focuskw":  focus_kw,
-            "_yoast_wpseo_metadesc": meta_desc,
+            "_yoast_wpseo_focuskw":  focus_kw,   # clean keyword only
+            "_yoast_wpseo_metadesc": meta_desc,   # from meta_descriptions.txt
         }
     }
-    if scheduled_date:
-        data["date"] = scheduled_date   # WordPress accepts ISO 8601 format
     try:
         r      = requests.post(f"{WP_URL}/posts", json=data, auth=AUTH, timeout=30)
         result = r.json()
@@ -776,7 +713,7 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
     STATS.dry_run = dry_run
 
     log("=" * 60)
-    log(f"Auto Posts v15 | target={posts_to_create} posts | dry_run={dry_run}")
+    log(f"Auto Posts v14 | target={posts_to_create} posts | dry_run={dry_run}")
     log("=" * 60)
 
     send_telegram(
@@ -835,49 +772,19 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
             for i in range(1, 500)
         ]
 
-    # Build schedule: 10 AM IST + 2 hour gap per post
-    ist        = pytz.timezone(SCHEDULE_TIMEZONE)
-    now_ist    = datetime.now(ist)
-    start_time = now_ist.replace(
-        hour=SCHEDULE_START_HOUR, minute=0, second=0, microsecond=0
-    )
-
-    # Fetch all existing WP titles once for duplicate checking
-    existing_titles = fetch_existing_titles() if not dry_run else set()
-
-    post_index = 0   # tracks how many posts were actually created (for scheduling)
-
     for kw in selected:
         log(f"\n--- Keyword: '{kw}' ---")
 
         title     = generate_title(kw)
-        focus_kw  = generate_focus_keyword(kw)
-        intro     = generate_intro(kw)
-        meta_desc = generate_meta_description(kw)
-
-        # ── Duplicate title check ──────────────────────────
-        if title.strip().lower() in existing_titles:
-            log(f"  ⏭ Duplicate title found — skipping: '{title}'")
-            send_telegram(
-                f"⏭️ <b>Post Skipped — Duplicate Title</b>\n\n"
-                f"🔑 Keyword : {kw}\n"
-                f"📝 Title   : {title}\n\n"
-                f"This exact title already exists in WordPress. Keyword skipped."
-            )
-            STATS.posts_skipped.append({"keyword": kw, "title": title})
-            continue
-        # ───────────────────────────────────────────────────
+        focus_kw  = generate_focus_keyword(kw)     # clean keyword only → Yoast
+        intro     = generate_intro(kw)             # from intros.txt
+        meta_desc = generate_meta_description(kw)  # from meta_descriptions.txt
 
         subheadings = fetch_subheadings_from_google(kw, count=5)
         category_id = match_category(title, categories)
 
-        # Calculate scheduled publish time for this post
-        scheduled_dt  = start_time + timedelta(hours=SCHEDULE_GAP_HOURS * post_index)
-        scheduled_str = scheduled_dt.strftime("%Y-%m-%dT%H:%M:%S")   # WordPress ISO format
-
         log(f"  Title      : {title}")
         log(f"  Focus KW   : {focus_kw}")
-        log(f"  Scheduled  : {scheduled_dt.strftime('%d %b %Y %I:%M %p IST')}")
         log(f"  Subheadings: {' | '.join(subheadings)}")
         log(f"  Meta Desc  : {meta_desc[:80]}...")
 
@@ -888,43 +795,35 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
         cat_name = next((c["name"] for c in categories if c["id"] == category_id), "Unknown")
 
         if dry_run:
-            log(f"  [DRY RUN] Would create   : '{title}'")
-            log(f"  [DRY RUN] Scheduled for  : {scheduled_dt.strftime('%d %b %Y %I:%M %p IST')}")
-            log(f"  [DRY RUN] Focus KW       : {focus_kw}")
-            log(f"  [DRY RUN] Category       : {cat_name} (ID={category_id})")
-            log(f"  [DRY RUN] HTML size      : {len(html_content)} chars")
+            log(f"  [DRY RUN] Would create : '{title}'")
+            log(f"  [DRY RUN] Focus KW     : {focus_kw}")
+            log(f"  [DRY RUN] Category     : {cat_name} (ID={category_id})")
+            log(f"  [DRY RUN] Sections     : {len(subheadings)}")
+            log(f"  [DRY RUN] HTML size    : {len(html_content)} chars")
 
             STATS.posts_created.append({
-                "title":     title,
-                "link":      "https://unityimage.com/?p=DRY_RUN",
-                "category":  cat_name,
-                "keyword":   kw,
-                "scheduled": scheduled_dt.strftime("%d %b %Y %I:%M %p IST"),
+                "title":    title,
+                "link":     "https://unityimage.com/?p=DRY_RUN",
+                "category": cat_name,
+                "keyword":  kw,
             })
-            post_index += 1
-
         else:
             post_id, post_link = create_wp_post(
-                title, html_content, category_id, focus_kw, meta_desc,
-                scheduled_date=scheduled_str
+                title, html_content, category_id, focus_kw, meta_desc
             )
 
             if post_id:
-                log(f"  ✓ Scheduled! ID={post_id} | {scheduled_dt.strftime('%d %b %I:%M %p')} | {post_link}")
+                log(f"  ✓ Post created! ID={post_id} | Category={cat_name} | {post_link}")
                 save_used_keyword(kw)
-                existing_titles.add(title.strip().lower())   # prevent same-run duplicates
-                post_index += 1
 
                 STATS.posts_created.append({
-                    "title":     title,
-                    "link":      post_link,
-                    "category":  cat_name,
-                    "keyword":   kw,
-                    "scheduled": scheduled_dt.strftime("%d %b %Y %I:%M %p IST"),
+                    "title":    title,
+                    "link":     post_link,
+                    "category": cat_name,
+                    "keyword":  kw,
                 })
 
-                # Request Google indexing after each scheduled post
-                if post_link:
+                if POST_STATUS == "publish" and post_link:
                     request_google_indexing(post_link)
 
             else:
@@ -946,7 +845,7 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
 # ============================================================
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Auto WordPress Post Creator v15")
+    parser = argparse.ArgumentParser(description="Auto WordPress Post Creator v14")
     parser.add_argument("--posts",   type=int,           default=POSTS_PER_RUN, help="Number of posts to create")
     parser.add_argument("--dry-run", action="store_true",                        help="Preview without posting to WordPress")
     args = parser.parse_args()
