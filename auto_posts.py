@@ -1,24 +1,23 @@
 """
-auto_posts.py — Fully Automatic WordPress Post Creator (v12)
+auto_posts.py — Fully Automatic WordPress Post Creator (v14)
 ============================================================
-Changes from v11:
-  ✅ No featured image (removed)
-  ✅ Telegram bot notifications with full run summary
-  ✅ GitHub Actions ready (cron at 10:00 AM IST = 04:30 UTC)
+Changes from v13:
+  ✅ Intros loaded from intros.txt
+  ✅ Meta descriptions loaded from meta_descriptions.txt
+  ✅ Title templates loaded from title_templates.txt
+  ✅ Subheading fallbacks loaded from subheading_fallbacks.txt
+  ✅ Focus keyword = clean keyword only (no title template wrapping)
+  ✅ Meta description uses keyword as clean title (no brackets/numbers)
+  ✅ Zero hardcoded content — everything lives in .txt files
 
-Setup:
-  1. Fill in WP credentials below
-  2. Fill in TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
-  3. Place service_account.json in same folder as this script
-  4. Run: python auto_posts.py --dry-run
-
-Usage:
-  python auto_posts.py                  # runs with default settings
-  python auto_posts.py --posts 5        # create 5 posts
-  python auto_posts.py --dry-run        # preview without posting
-
-GitHub Actions Cron (10:00 AM IST = 04:30 UTC):
-  See .github/workflows/auto_posts.yml
+File structure:
+  auto_posts.py              ← this script (settings only)
+  keywords.txt               ← your seed keywords
+  intros.txt                 ← intro paragraph templates (split by ---)
+  meta_descriptions.txt      ← meta description templates (split by ---)
+  title_templates.txt        ← title templates (one per line)
+  subheading_fallbacks.txt   ← fallback sets (one set per line, comma separated)
+  service_account.json       ← Google Indexing API key
 """
 
 import requests
@@ -31,10 +30,10 @@ from datetime import datetime
 
 
 # ============================================================
-# CONFIGURATION — Fill these in before running
+# CONFIGURATION
 # ============================================================
 
-WP_URL       = "https://unityimage.com/wp-json/wp/v2"
+WP_URL             = "https://unityimage.com/wp-json/wp/v2"
 USERNAME           = os.environ.get("WP_USERNAME", "your_wp_username")
 APP_PASSWORD       = os.environ.get("WP_APP_PASSWORD", "your_app_password")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "your_token")
@@ -42,157 +41,44 @@ TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "your_chat_id")
 
 # --- Post settings ---
 POSTS_PER_RUN      = 1
-IMAGES_PER_HEADING = 10    # 5 headings x 10 = 50 images per post
-POST_STATUS        = "publish"  # "draft" or "publish"
+IMAGES_PER_HEADING = 10
+POST_STATUS        = "publish"   # "draft" or "publish"
 
 # --- Google Indexing ---
 SERVICE_ACCOUNT_FILE = "service_account.json"
 
-# --- Fallback category name (must exist in your WordPress) ---
-FALLBACK_CATEGORY  = "Trending"
+# --- Fallback category ---
+FALLBACK_CATEGORY = "Trending"
+
+# --- All content files ---
+KEYWORDS_FILE           = "keywords.txt"
+INTROS_FILE             = "intros.txt"
+META_DESCRIPTIONS_FILE  = "meta_descriptions.txt"
+TITLE_TEMPLATES_FILE    = "title_templates.txt"
+SUBHEADING_FALLBACK_FILE = "subheading_fallbacks.txt"
 
 # --- Tracking files ---
 USED_KEYWORDS_FILE = "used_keywords.txt"
 LOG_FILE           = "logs/auto_posts.log"
 
+# --- Low keywords warning threshold ---
+LOW_KEYWORDS_THRESHOLD = 10
+
 AUTH = (USERNAME, APP_PASSWORD)
 
 
 # ============================================================
-# SEED KEYWORDS — Your niche topics
-# ============================================================
-
-SEED_KEYWORDS = [
-    "hidden face girl dp",
-    "hidden face girl photo",
-    "hidden face girl wallpaper",
-    "attitude girl photo",
-    "attitude girl wallpaper",
-    "attitude girl dp",
-    "sad girl dp",
-    "sad girl photo",
-    "sad girl wallpaper",
-    "aesthetic girl dp",
-    "aesthetic girl wallpaper",
-    "cute girl dp",
-    "cute girl photo",
-    "instagram girl dp",
-    "instagram girl photo",
-    "stylish girl dp",
-    "stylish girl photo",
-    "stylish girl wallpaper",
-    "beautiful girl dp",
-    "alone girl dp",
-    "cool girl dp",
-    "romantic girl dp",
-    "simple girl dp",
-    "black dress girl dp",
-    "college girl dp",
-    "desi girl dp",
-    "royal girl dp",
-    "modern girl dp",
-    "innocent girl dp",
-]
-
-
-# ============================================================
-# TITLE TEMPLATES
-# ============================================================
-
-TITLE_TEMPLATES = [
-    "100+ {kw} HD Images Free Download",
-    "Best 999+ {kw} Photos Collection",
-    "Latest {kw} Wallpapers HD Download",
-    "Top 100 {kw} Pictures Free",
-    "[Best] {kw} HD Images Free",
-    "[999+] {kw} Photos HD 2025",
-    "[555+] {kw} Wallpapers Free Download",
-    "Stunning {kw} Pictures Collection HD",
-    "[Download] {kw} HD Images 2026",
-    "Latest 555+ {kw} Photos Collection",
-    "New {kw} HD Wallpapers Free",
-    "Amazing {kw} Images Download Free",
-]
-
-
-# ============================================================
-# SUBHEADING FALLBACK SETS
-# ============================================================
-
-SUBHEADING_FALLBACK = [
-    ["Stylish", "Cute", "Aesthetic", "Attitude", "Sad"],
-    ["Beautiful", "Simple", "Cool", "Romantic", "Alone"],
-    ["HD", "Instagram", "Whatsapp", "Latest", "New"],
-    ["Royal", "HD Photos", "HD Wallpaper", "Stylish", "Unique"],
-    ["Black Dress", "College", "Desi", "Innocent", "Mirror Selfie"],
-    ["Hidden Face", "Instagram Profile", "Dark", "Vintage", "Classy"],
-]
-
-
-# ============================================================
-# INTRO PARAGRAPH TEMPLATES
-# ============================================================
-
-INTRO_TEMPLATES = [
-    (
-        "Are you searching for the best {topic} images to update your profile? "
-        "Your search ends right here because we have put together the most beautiful "
-        "and trending collection just for you. "
-        "Every image in this collection is available in full HD quality and is "
-        "completely free to download with just one click. "
-        "These stunning photos are perfect for setting as your Instagram or WhatsApp "
-        "display picture and will make your profile stand out from the crowd. "
-        "Scroll down and explore the full collection below to find your perfect match."
-    ),
-    (
-        "If you are tired of boring profile pictures that look just like everyone else, "
-        "this {topic} collection is exactly what you need. "
-        "We have brought together hundreds of unique and eye-catching images covering "
-        "every style from cute and aesthetic to bold and attitude looks. "
-        "All photos are in HD quality and available for free download without any "
-        "registration or payment required. "
-        "Whether you want to update your Instagram DP, WhatsApp profile picture or "
-        "phone wallpaper, you will find the perfect image right here. "
-        "Start scrolling and pick the ones you love the most."
-    ),
-    (
-        "Finding the perfect {topic} for your social media profile just got a whole "
-        "lot easier with our latest collection. "
-        "This gallery features a wide variety of beautiful and trending images that "
-        "have been handpicked to give you the best options in one place. "
-        "Each and every photo is available in crystal clear HD resolution and you "
-        "can download them all completely free of charge. "
-        "Set any of these as your Instagram or WhatsApp display picture and instantly "
-        "upgrade the look of your profile. "
-        "Browse through the full gallery below and download your favourites today."
-    ),
-    (
-        "Stop scrolling because you have just found the best {topic} collection on "
-        "the internet right now. "
-        "This carefully put together gallery includes some of the most popular and "
-        "trending images across every style and mood you could want. "
-        "Every single image here is full HD quality and completely free to download "
-        "with no hidden charges or sign up needed. "
-        "These photos are ideal for your Instagram DP, WhatsApp profile picture or "
-        "even as a wallpaper on your phone or laptop. "
-        "Take your time going through the collection below and save the ones that "
-        "catch your eye."
-    ),
-]
-
-
-# ============================================================
-# RUN STATS — collects data for Telegram summary
+# RUN STATS
 # ============================================================
 
 class RunStats:
     def __init__(self):
         self.start_time    = datetime.now()
-        self.posts_created = []   # list of dicts: {title, link, category, keyword}
-        self.posts_failed  = []   # list of keywords that failed
-        self.indexed       = []   # list of URLs successfully submitted to Google
-        self.index_failed  = []   # list of URLs that failed indexing
-        self.keywords_used = []   # fresh keywords selected this run
+        self.posts_created = []
+        self.posts_failed  = []
+        self.indexed       = []
+        self.index_failed  = []
+        self.keywords_used = []
         self.dry_run       = False
 
     def elapsed(self):
@@ -219,19 +105,67 @@ def log(msg):
 
 
 # ============================================================
+# FILE LOADERS
+# ============================================================
+
+def load_text_list(filepath, split_by="---"):
+    """
+    Loads a .txt file and returns a list of non-empty entries.
+    If split_by is set, splits the file by that separator (for multi-line blocks).
+    If split_by is None, returns one entry per line.
+    """
+    if not os.path.exists(filepath):
+        log(f"  ⚠ File not found: {filepath}")
+        return []
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    if split_by:
+        entries = [e.strip() for e in content.split(split_by) if e.strip()]
+    else:
+        entries = [line.strip() for line in content.splitlines()
+                   if line.strip() and not line.strip().startswith("#")]
+
+    log(f"  Loaded {len(entries)} entries from {filepath}")
+    return entries
+
+
+def load_subheading_fallbacks():
+    """
+    Loads subheading_fallbacks.txt.
+    Each line is one fallback set, words separated by comma.
+    Returns a list of lists.
+    """
+    lines = load_text_list(SUBHEADING_FALLBACK_FILE, split_by=None)
+    result = []
+    for line in lines:
+        parts = [p.strip() for p in line.split(",") if p.strip()]
+        if parts:
+            result.append(parts)
+    log(f"  Loaded {len(result)} subheading fallback sets")
+    return result
+
+
+def load_keywords_from_file():
+    """
+    Reads seed keywords from keywords.txt.
+    Lines starting with # and empty lines are ignored.
+    """
+    seeds = load_text_list(KEYWORDS_FILE, split_by=None)
+    log(f"  Loaded {len(seeds)} seed keywords from {KEYWORDS_FILE}")
+    return seeds
+
+
+# ============================================================
 # TELEGRAM NOTIFICATION
 # ============================================================
 
 def send_telegram(message):
-    """
-    Sends a message to your Telegram bot.
-    Max message length for Telegram is 4096 chars — auto-truncated.
-    """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         log("  ⚠ Telegram not configured — skipping notification")
         return
 
-    # Telegram max message size
     if len(message) > 4000:
         message = message[:3997] + "..."
 
@@ -253,28 +187,23 @@ def send_telegram(message):
 
 
 def build_telegram_summary(stats):
-    """
-    Builds a nicely formatted Telegram message with full run details.
-    Uses HTML formatting supported by Telegram.
-    """
     run_date = stats.start_time.strftime("%d %b %Y, %I:%M %p IST")
     mode     = "🔍 DRY RUN" if stats.dry_run else "🚀 LIVE RUN"
 
     lines = [
-        f"<b>🤖 Auto Posts Report</b>",
+        "<b>🤖 Auto Posts Report</b>",
         f"<b>Date:</b> {run_date}",
         f"<b>Mode:</b> {mode}",
         f"<b>Time Taken:</b> {stats.elapsed()}",
         "",
-        f"<b>📊 Summary</b>",
-        f"✅ Posts Created : <b>{len(stats.posts_created)}</b>",
-        f"❌ Posts Failed  : <b>{len(stats.posts_failed)}</b>",
+        "<b>📊 Summary</b>",
+        f"✅ Posts Created   : <b>{len(stats.posts_created)}</b>",
+        f"❌ Posts Failed    : <b>{len(stats.posts_failed)}</b>",
         f"🔍 Indexed (Google): <b>{len(stats.indexed)}</b>",
-        f"⚠️ Index Failed  : <b>{len(stats.index_failed)}</b>",
+        f"⚠️ Index Failed    : <b>{len(stats.index_failed)}</b>",
         "",
     ]
 
-    # Created posts detail
     if stats.posts_created:
         lines.append("<b>📝 Posts Created:</b>")
         for i, p in enumerate(stats.posts_created, 1):
@@ -285,21 +214,18 @@ def build_telegram_summary(stats):
             )
         lines.append("")
 
-    # Failed posts
     if stats.posts_failed:
         lines.append("<b>❌ Failed Keywords:</b>")
         for kw in stats.posts_failed:
             lines.append(f"  • {kw}")
         lines.append("")
 
-    # Google Indexed URLs
     if stats.indexed:
         lines.append("<b>🔍 Google Indexing Requested:</b>")
         for url in stats.indexed:
             lines.append(f"  • {url}")
         lines.append("")
 
-    # Index failures
     if stats.index_failed:
         lines.append("<b>⚠️ Indexing Failed:</b>")
         for url in stats.index_failed:
@@ -307,7 +233,7 @@ def build_telegram_summary(stats):
         lines.append("")
 
     lines.append("─────────────────────")
-    lines.append(f"<i>unityimage.com | Auto Posts v12</i>")
+    lines.append("<i>unityimage.com | Auto Posts v14</i>")
 
     return "\n".join(lines)
 
@@ -329,6 +255,31 @@ def save_used_keyword(kw):
 
 
 # ============================================================
+# LOW KEYWORDS ALERT
+# ============================================================
+
+def check_keywords_low(fresh_count):
+    if fresh_count == 0:
+        send_telegram(
+            "🚨 <b>Keywords Exhausted!</b>\n\n"
+            "All keywords in <code>keywords.txt</code> have been used up.\n"
+            "No new posts can be created until you add more.\n\n"
+            "👉 <b>What to do:</b>\n"
+            "1. Open <code>keywords.txt</code> in your project\n"
+            "2. Add new keywords (one per line)\n"
+            "3. Save → commit → push to GitHub\n\n"
+            "Script will resume automatically on next run. ✅"
+        )
+    elif fresh_count <= LOW_KEYWORDS_THRESHOLD:
+        send_telegram(
+            f"⚠️ <b>Keywords Running Low!</b>\n\n"
+            f"Only <b>{fresh_count}</b> fresh keywords remaining.\n\n"
+            f"👉 Please add more keywords to <code>keywords.txt</code> "
+            f"and push to GitHub soon to avoid interruption."
+        )
+
+
+# ============================================================
 # GOOGLE AUTOCOMPLETE
 # ============================================================
 
@@ -347,7 +298,13 @@ def fetch_autocomplete(seed):
     return []
 
 
-def collect_keywords(seeds, used_keywords):
+def collect_keywords(used_keywords):
+    seeds = load_keywords_from_file()
+
+    if not seeds:
+        log("  No seed keywords found in keywords.txt")
+        return []
+
     all_kws = []
     for seed in seeds:
         suggestions = fetch_autocomplete(seed)
@@ -355,7 +312,7 @@ def collect_keywords(seeds, used_keywords):
         all_kws.extend(suggestions)
         time.sleep(0.5)
 
-    all_kws.extend([s.lower() for s in seeds])
+    all_kws.extend(seeds)
 
     seen, unique = set(), []
     for kw in all_kws:
@@ -365,6 +322,9 @@ def collect_keywords(seeds, used_keywords):
 
     fresh = [kw for kw in unique if kw not in used_keywords and len(kw.split()) >= 3]
     log(f"  Total fresh keywords available: {len(fresh)}")
+
+    check_keywords_low(len(fresh))
+
     return fresh
 
 
@@ -373,6 +333,10 @@ def collect_keywords(seeds, used_keywords):
 # ============================================================
 
 def title_case_keyword(kw):
+    """
+    Converts keyword to title case.
+    e.g. 'hidden face girl dp' → 'Hidden Face Girl DP'
+    """
     always_upper = {"dp", "hd", "4k"}
     stop_words   = {"a", "an", "the", "and", "or", "for", "of", "in", "on", "at", "to"}
     words  = kw.split()
@@ -388,19 +352,102 @@ def title_case_keyword(kw):
 
 
 # ============================================================
-# TITLE GENERATOR
+# TITLE GENERATOR — loads from title_templates.txt
 # ============================================================
 
 def generate_title(kw):
-    template = random.choice(TITLE_TEMPLATES)
+    """
+    Picks a random title template from title_templates.txt
+    and replaces {kw} with the title-cased keyword.
+    """
+    templates = load_text_list(TITLE_TEMPLATES_FILE, split_by=None)
+
+    if not templates:
+        # Hard fallback if file is missing
+        log("  ⚠ title_templates.txt empty or missing — using fallback")
+        templates = ["Best {kw} HD Images Free Download"]
+
+    template = random.choice(templates)
     return template.replace("{kw}", title_case_keyword(kw))
 
 
 # ============================================================
-# SUBHEADINGS FROM GOOGLE AUTOCOMPLETE
+# FOCUS KEYWORD — clean keyword only, no template wrapping
+# ============================================================
+
+def generate_focus_keyword(kw):
+    """
+    Returns only the clean title-cased keyword.
+    e.g. 'hidden face girl dp' → 'Hidden Face Girl DP'
+    No numbers, no brackets, no template text.
+    This is set as the Yoast SEO focus keyphrase.
+    """
+    return title_case_keyword(kw)
+
+
+# ============================================================
+# INTRO GENERATOR — loads from intros.txt
+# ============================================================
+
+def generate_intro(keyword):
+    """
+    Picks a random intro from intros.txt (blocks split by ---).
+    Replaces {topic} with the title-cased keyword.
+    """
+    intros = load_text_list(INTROS_FILE, split_by="---")
+
+    if not intros:
+        log("  ⚠ intros.txt empty or missing — using fallback")
+        intros = [
+            "Welcome to the best {topic} collection available for free download in HD quality."
+        ]
+
+    pretty   = title_case_keyword(keyword)
+    template = random.choice(intros)
+    intro    = template.replace("{topic}", pretty)
+    log(f"  ✓ Intro generated ({len(intro)} chars)")
+    return intro
+
+
+# ============================================================
+# META DESCRIPTION — loads from meta_descriptions.txt
+# ============================================================
+
+def generate_meta_description(keyword):
+    """
+    Picks a random meta description from meta_descriptions.txt.
+    Replaces {topic} with the clean title-cased keyword.
+    Truncates to 155 chars max for SEO.
+    """
+    descriptions = load_text_list(META_DESCRIPTIONS_FILE, split_by="---")
+
+    if not descriptions:
+        log("  ⚠ meta_descriptions.txt empty or missing — using fallback")
+        descriptions = [
+            "Download the best {topic} HD images free for Instagram and WhatsApp."
+        ]
+
+    pretty   = title_case_keyword(keyword)
+    template = random.choice(descriptions)
+    meta     = template.replace("{topic}", pretty).strip()
+
+    # Truncate to 155 chars for SEO
+    if len(meta) > 155:
+        meta = meta[:152] + "..."
+
+    log(f"  ✓ Meta description ({len(meta)} chars): {meta[:60]}...")
+    return meta
+
+
+# ============================================================
+# SUBHEADINGS — loads fallbacks from subheading_fallbacks.txt
 # ============================================================
 
 def fetch_subheadings_from_google(keyword, count=5):
+    """
+    Fetches subheadings from Google Autocomplete.
+    Falls back to subheading_fallbacks.txt if not enough results.
+    """
     log(f"  Fetching subheadings from Google for: '{keyword}'")
     suggestions = fetch_autocomplete(keyword)
 
@@ -413,47 +460,25 @@ def fetch_subheadings_from_google(keyword, count=5):
     log(f"  Google returned {len(result)} subheading suggestions")
 
     if len(result) < count:
-        modifier_set = random.choice(SUBHEADING_FALLBACK)
+        fallback_sets = load_subheading_fallbacks()
+
+        if not fallback_sets:
+            # Hard fallback if file missing
+            fallback_sets = [["Stylish", "Cute", "Aesthetic", "Attitude", "Sad"]]
+
+        modifier_set = random.choice(fallback_sets)
         pretty_kw    = title_case_keyword(keyword)
+
         for mod in modifier_set:
             if len(result) >= count:
                 break
             candidate = f"{mod} {pretty_kw}"
             if candidate not in result:
                 result.append(candidate)
+
         log(f"  Fallback added — total subheadings: {len(result)}")
 
     return result[:count]
-
-
-# ============================================================
-# INTRO PARAGRAPH
-# ============================================================
-
-def generate_intro(keyword):
-    pretty   = title_case_keyword(keyword)
-    template = random.choice(INTRO_TEMPLATES)
-    intro    = template.replace("{topic}", pretty)
-    log(f"  ✓ Intro generated ({len(intro)} chars)")
-    return intro
-
-
-# ============================================================
-# META DESCRIPTION
-# ============================================================
-
-def generate_meta_description(intro):
-    sentences = re.split(r'(?<=[.?!])\s+', intro.strip())
-    sentences = [s.strip() for s in sentences if s.strip()]
-
-    meta = ""
-    for sentence in sentences:
-        if len(meta) + len(sentence) + 1 <= 155:
-            meta += sentence + " "
-        else:
-            break
-
-    return meta.strip()
 
 
 # ============================================================
@@ -548,7 +573,7 @@ def match_category(title, categories):
             return cat["id"]
 
     if categories:
-        log(f"  '{FALLBACK_CATEGORY}' not found — using first category (ID={categories[0]['id']})")
+        log(f"  '{FALLBACK_CATEGORY}' not found — using first category")
         return categories[0]["id"]
 
     log("  WARNING: No categories found — using ID=1")
@@ -611,7 +636,6 @@ def build_html_gallery(subheadings, all_media, images_per_heading, keyword, intr
     random.shuffle(pool)
 
     needed = images_per_heading * len(subheadings)
-
     while len(pool) < needed:
         extra = list(all_media)
         random.shuffle(extra)
@@ -643,18 +667,14 @@ def build_html_gallery(subheadings, all_media, images_per_heading, keyword, intr
 # ============================================================
 
 def create_wp_post(title, content, category_id, focus_kw, meta_desc):
-    """
-    Creates a WordPress post WITHOUT a featured image.
-    featured_media is intentionally omitted.
-    """
     data = {
         "title":      title,
         "content":    content,
         "status":     POST_STATUS,
         "categories": [category_id],
         "meta": {
-            "_yoast_wpseo_focuskw":  focus_kw,
-            "_yoast_wpseo_metadesc": meta_desc,
+            "_yoast_wpseo_focuskw":  focus_kw,   # clean keyword only
+            "_yoast_wpseo_metadesc": meta_desc,   # from meta_descriptions.txt
         }
     }
     try:
@@ -674,10 +694,9 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
     STATS.dry_run = dry_run
 
     log("=" * 60)
-    log(f"Auto Posts v12 | target={posts_to_create} posts | dry_run={dry_run}")
+    log(f"Auto Posts v14 | target={posts_to_create} posts | dry_run={dry_run}")
     log("=" * 60)
 
-    # Send start notification to Telegram
     send_telegram(
         f"🚀 <b>Auto Posts Started</b>\n"
         f"Mode: {'DRY RUN' if dry_run else 'LIVE'}\n"
@@ -690,11 +709,11 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
 
     log("Fetching WordPress categories...")
     categories = fetch_wp_categories() if not dry_run else [
-        {"id": 1,  "name": "Hidden Face Girl Pic"},
-        {"id": 2,  "name": "Sad Girl DP"},
-        {"id": 3,  "name": "Attitude Girl DP"},
-        {"id": 4,  "name": "Aesthetic Girl DP"},
-        {"id": 5,  "name": "Trending"},
+        {"id": 1, "name": "Hidden Face Girl Pic"},
+        {"id": 2, "name": "Sad Girl DP"},
+        {"id": 3, "name": "Attitude Girl DP"},
+        {"id": 4, "name": "Aesthetic Girl DP"},
+        {"id": 5, "name": "Trending"},
     ]
 
     if not categories:
@@ -704,11 +723,15 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
         return
 
     log("Fetching keyword suggestions from Google...")
-    keywords = collect_keywords(SEED_KEYWORDS, used_keywords)
+    keywords = collect_keywords(used_keywords)
 
     if not keywords:
-        msg = "⚠️ No fresh keywords found. Exiting."
-        log(msg)
+        msg = (
+            "🚨 <b>No fresh keywords found!</b>\n\n"
+            "All keywords in <code>keywords.txt</code> are either used up or the file is empty.\n"
+            "Please add new keywords to <code>keywords.txt</code> and push to GitHub."
+        )
+        log("No fresh keywords found. Exiting.")
         send_telegram(msg)
         return
 
@@ -733,16 +756,17 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
     for kw in selected:
         log(f"\n--- Keyword: '{kw}' ---")
 
-        title       = generate_title(kw)
+        title     = generate_title(kw)
+        focus_kw  = generate_focus_keyword(kw)     # clean keyword only → Yoast
+        intro     = generate_intro(kw)             # from intros.txt
+        meta_desc = generate_meta_description(kw)  # from meta_descriptions.txt
+
         subheadings = fetch_subheadings_from_google(kw, count=5)
         category_id = match_category(title, categories)
-        intro       = generate_intro(kw)
-        focus_kw    = title_case_keyword(kw)
-        meta_desc   = generate_meta_description(intro)
 
         log(f"  Title      : {title}")
-        log(f"  Subheadings: {' | '.join(subheadings)}")
         log(f"  Focus KW   : {focus_kw}")
+        log(f"  Subheadings: {' | '.join(subheadings)}")
         log(f"  Meta Desc  : {meta_desc[:80]}...")
 
         html_content = build_html_gallery(
@@ -753,6 +777,7 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
 
         if dry_run:
             log(f"  [DRY RUN] Would create : '{title}'")
+            log(f"  [DRY RUN] Focus KW     : {focus_kw}")
             log(f"  [DRY RUN] Category     : {cat_name} (ID={category_id})")
             log(f"  [DRY RUN] Sections     : {len(subheadings)}")
             log(f"  [DRY RUN] HTML size    : {len(html_content)} chars")
@@ -764,7 +789,6 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
                 "keyword":  kw,
             })
         else:
-            # NO featured image passed — removed in v12
             post_id, post_link = create_wp_post(
                 title, html_content, category_id, focus_kw, meta_desc
             )
@@ -789,12 +813,10 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
 
         time.sleep(2)
 
-    # ── Final Summary ──────────────────────────────────────
     log(f"\n{'='*60}")
     log(f"Done | Created: {len(STATS.posts_created)} | Failed: {len(STATS.posts_failed)}")
     log(f"{'='*60}\n")
 
-    # Send final Telegram report
     summary = build_telegram_summary(STATS)
     send_telegram(summary)
 
@@ -804,7 +826,7 @@ def run(posts_to_create=POSTS_PER_RUN, dry_run=False):
 # ============================================================
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Auto WordPress Post Creator v12")
+    parser = argparse.ArgumentParser(description="Auto WordPress Post Creator v14")
     parser.add_argument("--posts",   type=int,           default=POSTS_PER_RUN, help="Number of posts to create")
     parser.add_argument("--dry-run", action="store_true",                        help="Preview without posting to WordPress")
     args = parser.parse_args()
